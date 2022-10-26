@@ -35,6 +35,11 @@
 #include <deal.II/numerics/matrix_tools.h>
 #include <deal.II/numerics/vector_tools.h>
 
+#include <deal.II/base/cuda.h>
+#include <deal.II/lac/cuda_vector.h>
+#include <deal.II/lac/cuda_solver_direct.h>
+#include <deal.II/lac/cuda_precondition.h>
+
 #include <adapter/adapter.h>
 #include <adapter/parameters.h>
 #include <adapter/time_handler.h>
@@ -533,7 +538,20 @@ namespace Linear_Elasticity
     uint   lin_it  = 1;
     double lin_res = 0.0;
 
+    Utilities::CUDA::Handle cudaHandle;
+    auto*d_system_matrix = new CUDAWrappers::SparseMatrix<double>; //Crashes if not a pointer..
+    LinearAlgebra::ReadWriteVector<double> rw_velocity(velocity.size());
+    LinearAlgebra::ReadWriteVector<double> rw_rhs(system_rhs.size());
+    LinearAlgebra::CUDAWrappers::Vector<double> d_velocity(velocity.size());
+    LinearAlgebra::CUDAWrappers::Vector<double> d_rhs(system_rhs.size());
+
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+
+    d_system_matrix->reinit(cudaHandle, system_matrix);
+    rw_velocity.import(velocity, VectorOperation::insert);
+    rw_rhs.import(system_rhs, VectorOperation::insert);
+    d_velocity.import(rw_velocity, VectorOperation::insert);
+    d_rhs.import(rw_rhs, VectorOperation::insert);
 
     // Solve the linear system either using an iterative CG solver with SSOR or
     // a direct solver using UMFPACK
@@ -546,14 +564,11 @@ namespace Linear_Elasticity
         const double tol_sol = 1.e-10;
 
         SolverControl         solver_control(solver_its, tol_sol);
-        GrowingVectorMemory<> GVM;
-        SolverCG<>            solver_CG(solver_control, GVM);
 
-        PreconditionSSOR<> preconditioner;
-        preconditioner.initialize(system_matrix, 1.2);
-
-        solver_CG.solve(system_matrix, velocity, system_rhs, preconditioner);
-
+        SolverCG<LinearAlgebra::CUDAWrappers::Vector<double>> cg(solver_control);
+        CUDAWrappers::PreconditionILU<double> preconditioner(cudaHandle);
+        preconditioner.initialize(*d_system_matrix, 1.2);
+        cg.solve(*d_system_matrix, d_velocity, d_rhs, preconditioner);
         lin_it  = solver_control.last_step();
         lin_res = solver_control.last_value();
       }
@@ -561,13 +576,22 @@ namespace Linear_Elasticity
       {
         std::cout << "\t Direct solver: " << std::endl;
 
-        SparseDirectUMFPACK A_direct;
-        A_direct.initialize(system_matrix);
-        A_direct.vmult(velocity, system_rhs);
+        SolverControl solver_control;
+        CUDAWrappers::SolverDirect<double>::AdditionalData solverData("Cholesky");
+        CUDAWrappers::SolverDirect<double> cuda_solver{cudaHandle, solver_control, solverData};
+        PreconditionIdentity preconditioner;
+
+        cuda_solver.solve(*d_system_matrix, d_velocity, d_rhs);
+        lin_it  = solver_control.last_step();
+        lin_res = solver_control.last_value();
       }
     else
       Assert(parameters.type_lin == "Direct" || parameters.type_lin == "CG",
              ExcNotImplemented());
+
+    rw_velocity.import(d_velocity, VectorOperation::insert);
+    velocity = Vector<double>(rw_velocity.begin(), rw_velocity.end());
+    delete d_system_matrix;
 
     std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
     std::cout << "Time elapsed for solving linear system: " << std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count() << "[µs]" << std::endl;

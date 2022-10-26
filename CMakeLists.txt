@@ -16,15 +16,32 @@ IF (NOT DEFINED DIM)
         SET(DIM 2)
 ENDIF()
 ADD_DEFINITIONS(-DDIM=${DIM})
-
 # Set the target and the target source
 SET( TARGET "elasticity" )
-SET( TARGET_SRC
-    ${TARGET}.cc
-    ${CMAKE_SOURCE_DIR}/source/linear_elasticity/linear_elasticity.cc
-    ${CMAKE_SOURCE_DIR}/source/nonlinear_elasticity/nonlinear_elasticity.cc
-    ${CMAKE_SOURCE_DIR}/include/adapter/parameters.cc)
 
+set(PRECICE_ENABLE_CUDA ON CACHE BOOL "Whether to enable CUDA support of deal.II")
+
+if(PRECICE_ENABLE_CUDA)
+    message(STATUS "Building with CUDA enabled.")
+    add_definitions(-D__PRECICE_ENABLE_CUDA__)
+    set(DEAL_II_WITH_CUDA ON)
+    enable_language(CUDA)
+    set(CUDA_SEPARABLE_COMPILATION ON)
+    set(CUDA_PROPAGATE_HOST_FLAGS ON)
+    SET( TARGET_SRC
+            ${TARGET}.cc
+            ${CMAKE_SOURCE_DIR}/source/linear_elasticity/linear_elasticity.cu
+            ${CMAKE_SOURCE_DIR}/source/nonlinear_elasticity/nonlinear_elasticity.cc
+            ${CMAKE_SOURCE_DIR}/include/adapter/parameters.cc)
+else()
+    message(STATUS "Building with CUDA disabled.")
+    SET( TARGET_SRC
+            ${TARGET}.cc
+            ${CMAKE_SOURCE_DIR}/source/linear_elasticity/linear_elasticity.cc
+            ${CMAKE_SOURCE_DIR}/source/nonlinear_elasticity/nonlinear_elasticity.cc
+            ${CMAKE_SOURCE_DIR}/include/adapter/parameters.cc)
+
+endif()
 DEAL_II_INITIALIZE_CACHED_VARIABLES()
 
 IF(NOT CMAKE_BUILD_TYPE)
